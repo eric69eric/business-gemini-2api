@@ -43,6 +43,7 @@ curl --location --request POST 'http://127.0.0.1:8000/v1/chat/completions' \
 - **流式响应**: 支持 SSE (Server-Sent Events) 流式输出
 - **代理支持**: 支持 HTTP/HTTPS 代理配置
 - **JWT 自动管理**: 自动获取和刷新 JWT Token
+- **模型ID映射**: 优化流式输出响应
 
 ### 管理功能
 - **Web 控制台**: 美观的 Web 管理界面，支持明暗主题切换

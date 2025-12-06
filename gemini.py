@@ -156,17 +156,19 @@ def load_api_tokens():
         return
     tokens = account_manager.config.get("api_tokens") or account_manager.config.get("api_token")
     if isinstance(tokens, str):
-        API_TOKENS.add(tokens)
+        if tokens.strip():  # 过滤空字符串
+            API_TOKENS.add(tokens)
     elif isinstance(tokens, list):
         for t in tokens:
-            if isinstance(t, str):
+            if isinstance(t, str) and t.strip():  # 过滤空字符串
                 API_TOKENS.add(t)
 
 
 def persist_api_tokens():
     if account_manager.config is None:
         account_manager.config = {}
-    account_manager.config["api_tokens"] = list(API_TOKENS)
+    # 过滤空 token
+    account_manager.config["api_tokens"] = [t for t in API_TOKENS if t.strip()]
     account_manager.save_config()
 
 
@@ -1177,8 +1179,15 @@ def upload_inline_image_to_gemini(jwt: str, session_name: str, team_id: str,
 
 
 def stream_chat_with_images(jwt: str, sess_name: str, message: str, 
-                            proxy: str, team_id: str, file_ids: List[str] = None, account: dict = None) -> ChatResponse:
-    """发送消息并流式接收响应"""
+                            proxy: str, team_id: str, file_ids: List[str] = None, 
+                            account: dict = None, model_id: str = "gemini-3-pro-preview",
+                            include_thought: bool = False) -> ChatResponse:
+    """发送消息并流式接收响应
+    
+    Args:
+        model_id: 使用的模型ID，如 gemini-3-pro-preview, gemini-2.5-flash 等
+        include_thought: 是否包含思考过程
+    """
     query_parts = [{"text": message}]
     request_file_ids = file_ids if file_ids else []
     
@@ -1192,7 +1201,7 @@ def stream_chat_with_images(jwt: str, sess_name: str, message: str,
             "fileIds": request_file_ids,
             "answerGenerationMode": "NORMAL",
             "assistGenerationConfig":{
-                "modelId":"gemini-3-pro-preview"
+                "modelId": model_id
             },
             "toolsSpec": {
                 "webGroundingSpec": {},
@@ -1285,8 +1294,14 @@ def stream_chat_with_images(jwt: str, sess_name: str, message: str,
                 for att in reply.get("attachments", []) + gc.get("attachments", []) + content.get("attachments", []):
                     parse_attachment(att, result, proxy)
                 
-                if text and not thought:
-                    texts.append(text)
+                # 收集文本内容
+                if text:
+                    if thought:
+                        # 思考过程用特殊格式标记
+                        if include_thought:
+                            texts.append(f"<think>\n{text}\n</think>\n")
+                    else:
+                        texts.append(text)
 
         # 处理通过fileId引用的图片
         if file_ids and current_session:
@@ -1335,6 +1350,188 @@ def stream_chat_with_images(jwt: str, sess_name: str, message: str,
 
     result.text = "".join(texts)
     return result
+
+
+def stream_chat_realtime(jwt: str, sess_name: str, message: str, 
+                         proxy: str, team_id: str, file_ids: List[str] = None, 
+                         account: dict = None, account_csesidx: str = None,
+                         model_name: str = "gemini-enterprise",
+                         model_id: str = "gemini-3-pro-preview",
+                         include_thought: bool = False):
+    """真正的流式聊天 - 逐块返回响应
+    
+    这是一个生成器函数，在接收到 Gemini 每个数据块时立即 yield OpenAI 格式的 SSE 事件。
+    使用正则表达式直接从原始数据中提取文本，实现真正的实时流式输出。
+    
+    Args:
+        model_id: 使用的模型ID，如 gemini-3-pro-preview, gemini-2.5-flash 等
+        include_thought: 是否包含思考过程
+    
+    Yields:
+        str: SSE 格式的数据行，如 "data: {...}\n\n"
+    """
+    import re
+    
+    query_parts = [{"text": message}]
+    request_file_ids = file_ids if file_ids else []
+    
+    body = {
+        "configId": team_id,
+        "additionalParams": {"token": "-"},
+        "streamAssistRequest": {
+            "session": sess_name,
+            "query": {"parts": query_parts},
+            "filter": "",
+            "fileIds": request_file_ids,
+            "answerGenerationMode": "NORMAL",
+            "assistGenerationConfig":{
+                "modelId": model_id
+            },
+            "toolsSpec": {
+                "webGroundingSpec": {},
+                "toolRegistry": "default_tool_registry",
+                "imageGenerationSpec": {},
+                "videoGenerationSpec": {}
+            },
+            "languageCode": "zh-CN",
+            "userMetadata": {"timeZone": "Etc/GMT-8"},
+            "assistSkippingMode": "REQUEST_ASSIST"
+        }
+    }
+
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+    
+    try:
+        resp = requests.post(
+            STREAM_ASSIST_URL,
+            headers=get_headers(jwt, account),
+            json=body,
+            proxies=proxies,
+            verify=False,
+            timeout=120,
+            stream=True
+        )
+    except requests.RequestException as e:
+        error_chunk = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model_name,
+            "account_csesidx": account_csesidx,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": f"[请求错误: {e}]"},
+                "finish_reason": None
+            }]
+        }
+        yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    if resp.status_code != 200:
+        error_text = resp.text[:200] if resp.text else f"HTTP {resp.status_code}"
+        error_chunk = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model_name,
+            "account_csesidx": account_csesidx,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": f"[API错误: {error_text}]"},
+                "finish_reason": None
+            }]
+        }
+        yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    # 使用正则表达式直接提取文本内容
+    # Gemini 响应中文本格式: "text":"内容" 或 "text": "内容"
+    import re
+    buffer = ""
+    last_extracted_len = 0  # 已提取的文本总长度
+    
+    # 匹配 "text":"..." 内容的正则，支持转义字符
+    text_pattern = re.compile(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"')
+    
+    # 思考过程的格式特征：粗体标题，如 **Some Title**\n
+    # 这类内容通常是思考过程，可以直接过滤
+    thought_header_pattern = re.compile(r'^\*\*[A-Z][^*]*\*\*\\n$')
+    
+    # 已输出的文本内容（用于去重）
+    output_texts = []
+    
+    # 使用 iter_lines 接收数据（通常更快）
+    for line in resp.iter_lines(decode_unicode=True):
+        if line:
+            if isinstance(line, bytes):
+                line = line.decode('utf-8', errors='replace')
+            buffer += line
+            
+            # 查找所有 "text":"..." 匹配
+            for match in text_pattern.finditer(buffer):
+                text_content = match.group(1)
+                
+                # 跳过已输出的内容
+                if text_content in output_texts:
+                    continue
+                output_texts.append(text_content)
+                
+                # 解码 JSON 转义字符
+                try:
+                    decoded_text = json.loads(f'"{text_content}"')
+                except:
+                    decoded_text = text_content
+                
+                # 检查是否是思考过程（根据格式判断）
+                # 思考过程特征：短文本 + 粗体标题格式
+                is_thought = (
+                    len(decoded_text) < 100 and 
+                    decoded_text.startswith('**') and 
+                    decoded_text.rstrip().endswith('**')
+                )
+                
+                # 跳过思考过程内容（除非用户明确要求）
+                if is_thought:
+                    if include_thought:
+                        output_text = f"<think>\n{decoded_text}\n</think>\n"
+                    else:
+                        continue  # 跳过思考内容
+                else:
+                    output_text = decoded_text
+                
+                # 立即输出，不做额外的字符分割
+                # SSE 本身会处理流式传输
+                chunk = {
+                    "id": chunk_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model_name,
+                    "account_csesidx": account_csesidx,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": output_text},
+                        "finish_reason": None
+                    }]
+                }
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+    
+    # 发送结束标记
+    end_chunk = {
+        "id": chunk_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    }
+    yield f"data: {json.dumps(end_chunk, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
 
 
 def parse_generated_image(gen_img: Dict, result: ChatResponse, proxy: Optional[str] = None):
@@ -1691,6 +1888,15 @@ def chat_completions():
         messages = data.get('messages', [])
         prompts = data.get('prompts', [])  # 支持替代格式
         stream = data.get('stream', False)
+        requested_model = data.get('model', 'gemini-enterprise')  # 保存请求的模型名称
+        include_thought = data.get('include_thought', False)  # 是否包含思考过程
+        
+        # 模型ID映射：将请求的模型名称映射为 Gemini 支持的模型ID
+        # 从配置中获取模型映射，格式：{"id": "模型名", "name": "显示名称"}
+        models_config = account_manager.config.get("models", [])
+        models_mapping = {m.get("id", ""): m.get("id", "") for m in models_config}  # id -> id 映射
+        # 如果请求的模型在配置中存在，使用配置的ID；否则直接使用请求的模型名
+        model_id = models_mapping.get(requested_model, requested_model)
 
         # 提取用户消息、图片和文件ID
         user_message = ""
@@ -1751,6 +1957,70 @@ def chat_completions():
         # 检查是否指定了特定账号
         specified_account_id = data.get('account_id')
         
+        # ========== 流式模式处理 ==========
+        if stream:
+            # 获取账号信息
+            if specified_account_id is not None:
+                # 使用指定的账号
+                accounts = account_manager.accounts
+                if specified_account_id < 0 or specified_account_id >= len(accounts):
+                    return jsonify({"error": f"无效的账号ID: {specified_account_id}"}), 400
+                account = accounts[specified_account_id]
+                if not account.get('enabled', True):
+                    return jsonify({"error": f"账号 {specified_account_id} 已禁用"}), 400
+                cooldown_until = account.get('cooldown_until', 0)
+                if cooldown_until > time.time():
+                    return jsonify({"error": f"账号 {specified_account_id} 正在冷却中，请稍后重试"}), 429
+                account_idx = specified_account_id
+            else:
+                # 轮训获取账号
+                available_accounts = account_manager.get_available_accounts()
+                if not available_accounts:
+                    next_cd = account_manager.get_next_cooldown_info()
+                    wait_msg = ""
+                    if next_cd:
+                        wait_msg = f"（最近冷却账号 {next_cd['index']}，约 {int(next_cd['cooldown_until']-time.time())} 秒后可重试）"
+                    return jsonify({"error": f"没有可用的账号{wait_msg}"}), 429
+                account_idx, account = account_manager.get_next_account()
+            
+            try:
+                session, jwt, team_id = ensure_session_for_account(account_idx, account)
+                proxy = get_proxy()
+                
+                # 上传内联图片获取 fileId
+                for img in input_images:
+                    uploaded_file_id = upload_inline_image_to_gemini(jwt, session, team_id, img, proxy)
+                    if uploaded_file_id:
+                        gemini_file_ids.append(uploaded_file_id)
+                
+                # 获取账号标识
+                used_account_csesidx = account.get('csesidx', f'账号{account_idx}')
+                
+                # 真正的流式响应
+                def generate_stream():
+                    for chunk in stream_chat_realtime(
+                        jwt, session, user_message, proxy, team_id, 
+                        gemini_file_ids, account, used_account_csesidx,
+                        model_name=requested_model,
+                        model_id=model_id,
+                        include_thought=include_thought
+                    ):
+                        yield chunk
+                
+                # 创建响应并设置必要的头部禁用缓冲
+                response = Response(generate_stream(), mimetype='text/event-stream')
+                response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+                response.headers['X-Accel-Buffering'] = 'no'  # 禁用 nginx 缓冲
+                response.headers['Connection'] = 'keep-alive'
+                return response
+                
+            except (AccountRateLimitError, AccountAuthError, AccountRequestError) as e:
+                account_manager.mark_account_cooldown(account_idx, str(e), account_manager.generic_error_cooldown)
+                return jsonify({"error": f"账号请求失败: {e}"}), 500
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+        
+        # ========== 非流式模式处理 ==========
         if specified_account_id is not None:
             # 使用指定的账号
             accounts = account_manager.accounts
@@ -1777,7 +2047,7 @@ def chat_completions():
                     if uploaded_file_id:
                         gemini_file_ids.append(uploaded_file_id)
                 
-                chat_response = stream_chat_with_images(jwt, session, user_message, proxy, team_id, gemini_file_ids, account)
+                chat_response = stream_chat_with_images(jwt, session, user_message, proxy, team_id, gemini_file_ids, account, model_id=model_id, include_thought=include_thought)
             except (AccountRateLimitError, AccountAuthError, AccountRequestError) as e:
                 last_error = e
                 account_manager.mark_account_cooldown(account_idx, str(e), account_manager.generic_error_cooldown)
@@ -1810,7 +2080,7 @@ def chat_completions():
                         if uploaded_file_id:
                             gemini_file_ids.append(uploaded_file_id)
                     
-                    chat_response = stream_chat_with_images(jwt, session, user_message, proxy, team_id, gemini_file_ids, account)
+                    chat_response = stream_chat_with_images(jwt, session, user_message, proxy, team_id, gemini_file_ids, account, model_id=model_id, include_thought=include_thought)
                     break
                 except AccountRateLimitError as e:
                     last_error = e
@@ -1853,63 +2123,28 @@ def chat_completions():
         # 构建响应内容（包含图片）
         response_content = build_openai_response_content(chat_response, request.host_url)
 
-        if stream:
-            # 流式响应
-            def generate():
-                chunk_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-                chunk = {
-                    "id": chunk_id,
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": "gemini-enterprise",
-                    "account_csesidx": used_account_csesidx,
-                    "choices": [{
-                        "index": 0,
-                        "delta": {"content": response_content},
-                        "finish_reason": None
-                    }]
-                }
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                
-                # 结束标记
-                end_chunk = {
-                    "id": chunk_id,
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": "gemini-enterprise",
-                    "choices": [{
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": "stop"
-                    }]
-                }
-                yield f"data: {json.dumps(end_chunk, ensure_ascii=False)}\n\n"
-                yield "data: [DONE]\n\n"
-
-            return Response(generate(), mimetype='text/event-stream')
-        else:
-            # 非流式响应
-            response = {
-                "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": "gemini-enterprise",
-                "account_csesidx": used_account_csesidx,
-                "choices": [{
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": response_content
-                    },
-                    "finish_reason": "stop"
-                }],
-                "usage": {
-                    "prompt_tokens": len(user_message),
-                    "completion_tokens": len(chat_response.text),
-                    "total_tokens": len(user_message) + len(chat_response.text)
-                }
+        # 非流式响应
+        response = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": requested_model,
+            "account_csesidx": used_account_csesidx,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": response_content
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": len(user_message),
+                "completion_tokens": len(chat_response.text),
+                "total_tokens": len(user_message) + len(chat_response.text)
             }
-            return jsonify(response)
+        }
+        return jsonify(response)
 
     except Exception as e:
         import traceback
